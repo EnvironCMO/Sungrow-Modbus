@@ -1,9 +1,16 @@
-try:
-    # Pymodbus >= 3.0
-    from pymodbus.client import ModbusTcpClient
-except ImportError:
-    # Pymodbus < 3.0
-    from pymodbus.client.sync import ModbusTcpClient
+#
+# Ripped directly from SungrowModbusTCPClient github page by rpvelloso 
+# https://github.com/rpvelloso/Sungrow-Modbus
+#
+# Once 0.1.7 is released to PyPi will look to remove this from code.
+#
+
+# Pymodbus >= 3.0 & Python >= 3.8
+from pymodbus.client import ModbusTcpClient
+
+# Pymodbus < 3.0 & Python < 3.7
+#from pymodbus.client.sync import ModbusTcpClient
+
 from Cryptodome.Cipher import AES
 from datetime import date
 
@@ -19,8 +26,8 @@ class SungrowModbusTcpClient(ModbusTcpClient):
         self._fifo = bytes()
         self._priv_key = priv_key
         self._key = None
-        self._orig_recv = self._recv
-        self._orig_send = self._send
+        self._orig_recv = self.recv
+        self._orig_send = self.send
         self._key_date = date.today()
 
     def _setup(self):
@@ -51,18 +58,43 @@ class SungrowModbusTcpClient(ModbusTcpClient):
               self._key_date = date.today()
 
     def connect(self):
-        self.close()
+        """
+        Establish connection if not already connected and fetch encryption key if needed.
+        Avoid closing/re-opening the socket on every connect() call to prevent connect/disconnect churn.
+        """
+        # If there is an underlying socket and it's valid, assume connected
+        try:
+            sock = getattr(self, 'socket', None) or getattr(self, 'sock', None) or getattr(self, 'socket_handle', None)
+            if sock is not None:
+                try:
+                    fd = sock.fileno()
+                    if fd is not None and fd >= 0:
+                        return True
+                except Exception:
+                    # fileno may not be available; fallback to getpeername check
+                    try:
+                        sock.getpeername()
+                        return True
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Not connected -> establish physical connection once
         result = ModbusTcpClient.connect(self)
         if not result:
+            # keep internal crypto state clean on failure
             self._restore()
-        else:
+            return False
+
+        # Try to fetch/setup encryption key (idempotent)
+        try:
             self._getkey()
-            if self._key is not None:
-               # We now have the encryption key stored and a second
-               # connect will likely succeed.
-               self.close()
-               result = ModbusTcpClient.connect(self)
-        return result
+        except Exception:
+            # if key retrieval fails, restore crypto but keep the socket open
+            self._restore()
+
+        return True
 
     def close(self):
        ModbusTcpClient.close(self)
